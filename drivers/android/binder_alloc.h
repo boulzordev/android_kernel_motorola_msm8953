@@ -1,5 +1,11 @@
 /*
+ *
+ * binder_alloc with rt_mutexes for locks; (for Binder_rt)
+ *
  * Copyright (C) 2017 Google, Inc.
+ * Copyright (c) 2017 Jordan Johnston
+ *
+ * jordan Johnston <johnstonljordan@gmail.com>
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -21,9 +27,9 @@
 #include <linux/rtmutex.h>
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
+#include <linux/list_lru.h>
 
-#define BINDER_MIN_ALLOC (6 * PAGE_SIZE)
-
+extern struct list_lru binder_alloc_lru;
 struct binder_transaction;
 
 /**
@@ -63,6 +69,18 @@ struct binder_buffer {
 };
 
 /**
+ * struct binder_lru_page - page object used for binder shrinker
+ * @page_ptr: pointer to physical page in mmap'd space
+ * @lru:      entry in binder_alloc_lru
+ * @alloc:    binder_alloc for a proc
+ */
+struct binder_lru_page {
+	struct list_head lru;
+	struct page *page_ptr;
+	struct binder_alloc *alloc;
+};
+
+/**
  * struct binder_alloc - per-binder proc state for binder allocator
  * @vma:                vm_area_struct passed to mmap_handler
  *                      (invarient after mmap)
@@ -77,10 +95,10 @@ struct binder_buffer {
  * @allocated_buffers:  rb tree of allocated buffers sorted by address
  * @free_async_space:   VA space available for async buffers. This is
  *                      initialized at mmap time to 1/2 the full VA space
- * @pages:              array of physical page addresses for each
- *                      page of mmap'd space
+ * @pages:              array of binder_lru_page
  * @buffer_size:        size of address space specified via mmap
  * @pid:                pid for associated binder_proc (invariant after init)
+ * @pages_high:         high watermark of offset in @pages
  *
  * Bookkeeping structure for per-proc address space management for binder
  * buffers. It is normally initialized during binder_init() and binder_mmap()
@@ -88,7 +106,7 @@ struct binder_buffer {
  * struct binder_buffer objects used to track the user buffers
  */
 struct binder_alloc {
-	struct mutex mutex;
+	struct rt_mutex mutex;
 	struct task_struct *tsk;
 	struct vm_area_struct *vma;
 	struct mm_struct *vma_vm_mm;
@@ -98,10 +116,11 @@ struct binder_alloc {
 	struct rb_root free_buffers;
 	struct rb_root allocated_buffers;
 	size_t free_async_space;
-	struct page **pages;
+	struct binder_lru_page *pages;
 	size_t buffer_size;
 	uint32_t buffer_free;
 	int pid;
+	size_t pages_high;
 };
 
 #ifdef CONFIG_ANDROID_BINDER_IPC_SELFTEST
@@ -109,12 +128,15 @@ void binder_selftest_alloc(struct binder_alloc *alloc);
 #else
 static inline void binder_selftest_alloc(struct binder_alloc *alloc) {}
 #endif
+enum lru_status binder_alloc_free_page(struct list_head *item,
+				       spinlock_t *lock, void *cb_arg);
 extern struct binder_buffer *binder_alloc_new_buf(struct binder_alloc *alloc,
 						  size_t data_size,
 						  size_t offsets_size,
 						  size_t extra_buffers_size,
 						  int is_async);
 extern void binder_alloc_init(struct binder_alloc *alloc);
+void binder_alloc_shrinker_init(void);
 extern void binder_alloc_vma_close(struct binder_alloc *alloc);
 extern struct binder_buffer *
 binder_alloc_prepare_to_free(struct binder_alloc *alloc,
@@ -127,6 +149,8 @@ extern void binder_alloc_deferred_release(struct binder_alloc *alloc);
 extern int binder_alloc_get_allocated_count(struct binder_alloc *alloc);
 extern void binder_alloc_print_allocated(struct seq_file *m,
 					 struct binder_alloc *alloc);
+void binder_alloc_print_pages(struct seq_file *m,
+			      struct binder_alloc *alloc);
 
 /**
  * binder_alloc_get_free_async_space() - get free space available for async
@@ -139,9 +163,9 @@ binder_alloc_get_free_async_space(struct binder_alloc *alloc)
 {
 	size_t free_async_space;
 
-	mutex_lock(&alloc->mutex);
+	rt_mutex_lock(&alloc->mutex);
 	free_async_space = alloc->free_async_space;
-	mutex_unlock(&alloc->mutex);
+	rt_mutex_unlock(&alloc->mutex);
 	return free_async_space;
 }
 
@@ -167,4 +191,3 @@ binder_alloc_get_user_buffer_offset(struct binder_alloc *alloc)
 }
 
 #endif /* _LINUX_BINDER_ALLOC_H */
-
