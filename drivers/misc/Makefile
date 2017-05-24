@@ -89,3 +89,7 @@ obj-$(CONFIG_MODS_MODBUS_EXT) += modbus_ext.o
 obj-$(CONFIG_FSUSB42_MUX) += fsusb42_mux.o
 obj-$(CONFIG_SENSORS_STML0XX) += stml0xx/
 obj-y += moto-dtv/
+
+# TODO: remove me b/62057517
+subdir-ccflags-y += \
+	-Wno-ignored-attributes
