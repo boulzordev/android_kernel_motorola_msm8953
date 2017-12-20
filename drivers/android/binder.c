@@ -4422,7 +4422,8 @@ static void binder_release_work(struct binder_proc *proc,
 }
 
 static struct binder_thread *binder_get_thread_ilocked(
-		struct binder_proc *proc, struct binder_thread *new_thread)
+		struct binder_proc *proc, struct task_struct *task,
+		struct binder_thread *new_thread)
 {
 	struct binder_thread *thread = NULL;
 	struct rb_node *parent = NULL;
@@ -4432,9 +4433,9 @@ static struct binder_thread *binder_get_thread_ilocked(
 		parent = *p;
 		thread = rb_entry(parent, struct binder_thread, rb_node);
 
-		if (current->pid < thread->pid)
+		if (task->pid < thread->pid)
 			p = &(*p)->rb_left;
-		else if (current->pid > thread->pid)
+		else if (task->pid > thread->pid)
 			p = &(*p)->rb_right;
 		else
 			return thread;
@@ -4444,9 +4445,9 @@ static struct binder_thread *binder_get_thread_ilocked(
 	thread = new_thread;
 	binder_stats_created(BINDER_STAT_THREAD);
 	thread->proc = proc;
-	thread->pid = current->pid;
-	get_task_struct(current);
-	thread->task = current;
+	thread->pid = task->pid;
+	get_task_struct(task);
+	thread->task = task;
 	atomic_set(&thread->tmp_ref, 0);
 	init_waitqueue_head(&thread->wait);
 	INIT_LIST_HEAD(&thread->todo);
@@ -4461,25 +4462,101 @@ static struct binder_thread *binder_get_thread_ilocked(
 	return thread;
 }
 
-static struct binder_thread *binder_get_thread(struct binder_proc *proc)
+/**
+ * binder_do_get_thread() - Get binder_thread structure
+ * @proc:         struct binder_proc
+ * @task:         struct task_struct of the thread
+ * @take_tmpref:  whether to take a tmpref on the thread
+ *
+ * Allows for retrieving any thread in @proc. If @task
+ * is not current, @take_tmpref should be set, to make
+ * sure the binder_thread structure stays alive.
+ *
+ * If @take_tmpref is set, the caller must release the
+ * tmpref with binder_thread_dec_tmpref() when it's done.
+ *
+ * Return: The binder_thread associated with @task.
+ */
+static struct binder_thread *binder_do_get_thread(struct binder_proc *proc,
+						  struct task_struct *task,
+						  bool take_tmpref)
 {
 	struct binder_thread *thread;
 	struct binder_thread *new_thread;
 
 	binder_inner_proc_lock(proc);
-	thread = binder_get_thread_ilocked(proc, NULL);
+	thread = binder_get_thread_ilocked(proc, task, NULL);
+	if (thread && take_tmpref)
+		atomic_inc(&thread->tmp_ref);
 	binder_inner_proc_unlock(proc);
 	if (!thread) {
 		new_thread = kzalloc(sizeof(*thread), GFP_KERNEL);
 		if (new_thread == NULL)
 			return NULL;
 		binder_inner_proc_lock(proc);
-		thread = binder_get_thread_ilocked(proc, new_thread);
+		thread = binder_get_thread_ilocked(proc, task, new_thread);
+		if (thread && take_tmpref)
+			atomic_inc(&thread->tmp_ref);
 		binder_inner_proc_unlock(proc);
 		if (thread != new_thread)
 			kfree(new_thread);
 	}
 	return thread;
+}
+
+/**
+ * binder_get_thread() - Get binder_thread structure for the current task
+ *
+ * Return: The binder_thread associated with 'current'.
+ */
+static struct binder_thread *binder_get_thread(struct binder_proc *proc) {
+	return binder_do_get_thread(proc, current, /* take_tmpref = */false);
+}
+
+/**
+ * binder_get_thread_by_pid() - Get binder_thread structure for a pid
+ * @proc:         struct binder_proc of the thread
+ * @pid:          pid of the thread
+ *
+ * Allows for retrieving a binder_thread by pid. @pid should belong
+ * to the thread-group of @proc.
+ *
+ * If a binder_thread is found, it will be returned with a tmpref held.
+ * The caller should release the tmpref with binder_thread_dec_tmpref()
+ * when it's done.
+ *
+ * Return: The binder_thread associated with @pid, with a tmpref held,
+ *         or NULL if no binder_thread could be found or created.
+ */
+static struct binder_thread *binder_get_thread_by_pid(struct binder_proc *proc,
+						      pid_t pid)
+{
+	struct binder_thread *thread;
+	struct task_struct *task;
+	struct pid_namespace *pid_ns = task_active_pid_ns(current);
+
+	/* Need RCU because pid may not correspond to current */
+	rcu_read_lock();
+	task = find_task_by_pid_ns(pid, pid_ns);
+	if (task)
+		get_task_struct(task);
+	rcu_read_unlock();
+
+	if (!task)
+		goto err_no_task;
+
+	if (task_tgid_nr_ns(task, pid_ns) != proc->pid)
+		goto err_not_part_of_tg;
+
+	thread = binder_do_get_thread(proc, task, /* take_tmpref = */true);
+
+	put_task_struct(task);
+
+	return thread;
+err_not_part_of_tg:
+	put_task_struct(task);
+err_no_task:
+	return NULL;
 }
 
 static void binder_free_proc(struct binder_proc *proc)
