@@ -87,6 +87,21 @@ enum flat_binder_object_flags {
 	 * scheduling policy from the caller (for synchronous transactions).
 	 */
 	FLAT_BINDER_FLAG_INHERIT_RT = 0x800,
+
+	/**
+	 * @FLAT_BINDER_FLAG_THREAD: must be set for flat_binder_object_thread
+	 *
+	 */
+	FLAT_BINDER_FLAG_THREAD = 0x1000,
+
+	/**
+	 * @FLAT_BINDER_FLAG_ASYNC_ONLY: dedicated thread for async only
+	 *
+	 * When set, only asynchronous transactions into a node are handled by
+	 * its dedicated thread.
+	 *
+	 */
+	FLAT_BINDER_FLAG_THREAD_ASYNC_ONLY = 0x2000,
 };
 
 #ifdef BINDER_IPC_32BIT
@@ -124,6 +139,25 @@ struct flat_binder_object {
 
 	/* extra data associated with local object */
 	binder_uintptr_t	cookie;
+};
+
+/**
+ * struct flat_binder_object_thread - flat_binder_object with associated thread
+ * @fb:		flat_binder_object describing the binder object
+ * @thread:     pid of thread to handle transactions into this node, can be 0
+ *
+ * The binder driver has added support for linking a node to a thread, which
+ * ensures that all (a)synchronous transactions into that node are handled on
+ * this thread. If userspace wants this behavior, it has to pass this object
+ * into the kernel, and fb->flags must have @FLAT_BINDER_FLAG_THREAD set.
+ *
+ * Note that the thread argument is only used for nodes, eg for
+ * @BINDER_TYPE_BINDER and @BINDER_TYPE_WEAK_BINDER.
+ */
+struct flat_binder_object_thread {
+	struct flat_binder_object       fb;
+	/* pid of thread for handling transactions into this node */
+	pid_t thread;
 };
 
 /**
