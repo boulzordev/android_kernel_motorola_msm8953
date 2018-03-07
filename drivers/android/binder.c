@@ -3115,7 +3115,8 @@ static void binder_transaction(struct binder_proc *proc,
 			binder_proc_lock(proc);
 			ref = binder_get_ref_olocked(proc, tr->target.handle,
 						     true);
-				target_node = binder_get_node_refs_for_txn(
+			if (ref) {
+					target_node = binder_get_node_refs_for_txn(
 						ref->node, &target_proc,
 						&return_error);
 			} else {
