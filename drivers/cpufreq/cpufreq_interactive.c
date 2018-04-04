@@ -89,7 +89,7 @@ static cpumask_t controlled_cpus;
 static unsigned int default_target_loads[] = {DEFAULT_TARGET_LOAD};
 
 #define DEFAULT_TIMER_RATE (20 * USEC_PER_MSEC)
-#define SCREEN_OFF_TIMER_RATE ((unsigned long) (60 * USEC_PER_MSEC))
+#define SCREEN_OFF_TIMER_RATE (40 * USEC_PER_MSEC)
 #define DEFAULT_ABOVE_HISPEED_DELAY DEFAULT_TIMER_RATE
 static unsigned int default_above_hispeed_delay[] = {
 	DEFAULT_ABOVE_HISPEED_DELAY };
@@ -116,6 +116,7 @@ struct cpufreq_interactive_tunables {
 	 */
 	unsigned long timer_rate;
 	unsigned long prev_timer_rate;
+	unsigned long sleep_timer_rate;
 	/*
 	 * Wait this long before raising speed above hispeed, by default a
 	 * single timer interval.
@@ -506,11 +507,11 @@ static void cpufreq_interactive_timer(unsigned long data)
 		&& tunables->timer_rate != tunables->prev_timer_rate)
 		tunables->timer_rate = tunables->prev_timer_rate;
 	else if (!display_on
-		&& tunables->timer_rate != SCREEN_OFF_TIMER_RATE) {
+		&& tunables->timer_rate != tunables->sleep_timer_rate) {
 		tunables->prev_timer_rate = tunables->timer_rate;
 		tunables->timer_rate
 			= max(tunables->timer_rate,
-				SCREEN_OFF_TIMER_RATE);
+				tunables->sleep_timer_rate);
 	}
 
 	if (tunables->use_sched_load)
@@ -1154,6 +1155,32 @@ static ssize_t store_timer_rate(struct cpufreq_interactive_tunables *tunables,
 	return count;
 }
 
+static ssize_t show_sleep_timer_rate(struct cpufreq_interactive_tunables
+		*tunables, char *buf)
+{
+	return sprintf(buf, "%lu\n", tunables->sleep_timer_rate);
+}
+
+static ssize_t store_sleep_timer_rate(struct cpufreq_interactive_tunables
+		*tunables, const char *buf, size_t count)
+{
+	int ret;
+	unsigned long val, val_round;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+
+	val_round = jiffies_to_usecs(usecs_to_jiffies(val));
+	if (val != val_round)
+		pr_warn("sleep_timer_rate not aligned to jiffy. Rounded up to %lu\n",
+			val_round);
+
+	tunables->sleep_timer_rate = val_round;
+
+	return count;
+}
+
 static ssize_t show_timer_slack(struct cpufreq_interactive_tunables *tunables,
 		char *buf)
 {
@@ -1459,6 +1486,7 @@ show_store_gov_pol_sys(hispeed_freq);
 show_store_gov_pol_sys(go_hispeed_load);
 show_store_gov_pol_sys(min_sample_time);
 show_store_gov_pol_sys(timer_rate);
+show_store_gov_pol_sys(sleep_timer_rate);
 show_store_gov_pol_sys(timer_slack);
 show_store_gov_pol_sys(boost);
 store_gov_pol_sys(boostpulse);
@@ -1490,6 +1518,7 @@ gov_sys_pol_attr_rw(hispeed_freq);
 gov_sys_pol_attr_rw(go_hispeed_load);
 gov_sys_pol_attr_rw(min_sample_time);
 gov_sys_pol_attr_rw(timer_rate);
+gov_sys_pol_attr_rw(sleep_timer_rate);
 gov_sys_pol_attr_rw(timer_slack);
 gov_sys_pol_attr_rw(boost);
 gov_sys_pol_attr_rw(boostpulse_duration);
@@ -1516,6 +1545,7 @@ static struct attribute *interactive_attributes_gov_sys[] = {
 	&go_hispeed_load_gov_sys.attr,
 	&min_sample_time_gov_sys.attr,
 	&timer_rate_gov_sys.attr,
+	&sleep_timer_rate_gov_sys.attr,
 	&timer_slack_gov_sys.attr,
 	&boost_gov_sys.attr,
 	&boostpulse_gov_sys.attr,
@@ -1544,6 +1574,7 @@ static struct attribute *interactive_attributes_gov_pol[] = {
 	&go_hispeed_load_gov_pol.attr,
 	&min_sample_time_gov_pol.attr,
 	&timer_rate_gov_pol.attr,
+	&sleep_timer_rate_gov_pol.attr,
 	&timer_slack_gov_pol.attr,
 	&boost_gov_pol.attr,
 	&boostpulse_gov_pol.attr,
@@ -1594,6 +1625,7 @@ static struct cpufreq_interactive_tunables *alloc_tunable(
 	tunables->min_sample_time = DEFAULT_MIN_SAMPLE_TIME;
 	tunables->timer_rate = DEFAULT_TIMER_RATE;
 	tunables->prev_timer_rate = DEFAULT_TIMER_RATE;
+	tunables->sleep_timer_rate = SCREEN_OFF_TIMER_RATE;
 	tunables->boostpulse_duration_val = DEFAULT_MIN_SAMPLE_TIME;
 	tunables->timer_slack_val = usecs_to_jiffies(DEFAULT_TIMER_SLACK);
 
