@@ -30,14 +30,20 @@
 #include <linux/smpboot.h>
 #include "../time/tick-internal.h"
 
-#define RCU_KTHREAD_PRIO 1
-
 #ifdef CONFIG_RCU_BOOST
+
 #include "../locking/rtmutex_common.h"
-#define RCU_BOOST_PRIO CONFIG_RCU_BOOST_PRIO
-#else
-#define RCU_BOOST_PRIO RCU_KTHREAD_PRIO
-#endif
+
+/*
+ * Control variables for per-CPU and per-rcu_node kthreads.  These
+ * handle all flavors of RCU.
+ */
+static DEFINE_PER_CPU(struct task_struct *, rcu_cpu_kthread_task);
+DEFINE_PER_CPU(unsigned int, rcu_cpu_kthread_status);
+DEFINE_PER_CPU(unsigned int, rcu_cpu_kthread_loops);
+DEFINE_PER_CPU(char, rcu_cpu_has_work);
+
+#endif /* #ifdef CONFIG_RCU_BOOST */
 
 #ifdef CONFIG_RCU_NOCB_CPU
 static cpumask_var_t rcu_nocb_mask; /* CPUs to have callbacks offloaded. */
@@ -85,6 +91,9 @@ static void __init rcu_bootup_announce_oddness(void)
 		pr_info("\tBoot-time adjustment of leaf fanout to %d.\n", rcu_fanout_leaf);
 	if (nr_cpu_ids != NR_CPUS)
 		pr_info("\tRCU restricting CPUs from NR_CPUS=%d to nr_cpu_ids=%d.\n", NR_CPUS, nr_cpu_ids);
+#ifdef CONFIG_RCU_BOOST
+	pr_info("\tRCU kthread priority: %d.\n", kthread_prio);
+#endif
 }
 
 #ifdef CONFIG_TREE_PREEMPT_RCU
@@ -397,10 +406,18 @@ void rcu_read_unlock_special(struct task_struct *t)
 		}
 
 #ifdef CONFIG_RCU_BOOST
-		/* Unboost if we were boosted. */
+		/*
+		 * Unboost if we were boosted.
+		 * Disable preemption to make sure completion is signalled
+		 * without having the task de-scheduled with its priority
+		 * lowered (in which case we're left with no boosted thread
+		 * and possible RCU starvation).
+		 */
 		if (drop_boost_mutex) {
+			preempt_disable();
 			rt_mutex_unlock(&rnp->boost_mtx);
 			complete(&rnp->boost_completion);
+			preempt_enable();
 		}
 #endif /* #ifdef CONFIG_RCU_BOOST */
 
@@ -1326,7 +1343,7 @@ static int rcu_spawn_one_boost_kthread(struct rcu_state *rsp,
 	smp_mb__after_unlock_lock();
 	rnp->boost_kthread_task = t;
 	raw_spin_unlock_irqrestore(&rnp->lock, flags);
-	sp.sched_priority = RCU_BOOST_PRIO;
+	sp.sched_priority = kthread_prio;
 	sched_setscheduler_nocheck(t, SCHED_FIFO, &sp);
 	wake_up_process(t); /* get to TASK_INTERRUPTIBLE quickly. */
 	return 0;
@@ -1343,7 +1360,7 @@ static void rcu_cpu_kthread_setup(unsigned int cpu)
 {
 	struct sched_param sp;
 
-	sp.sched_priority = RCU_KTHREAD_PRIO;
+	sp.sched_priority = kthread_prio;
 	sched_setscheduler_nocheck(current, SCHED_FIFO, &sp);
 }
 
@@ -1982,12 +1999,10 @@ static int rcu_oom_notify(struct notifier_block *self,
 	 */
 	atomic_set(&oom_callback_count, 1);
 
-	get_online_cpus();
 	for_each_online_cpu(cpu) {
 		smp_call_function_single(cpu, rcu_oom_notify_cpu, NULL, 1);
 		cond_resched_rcu_qs();
 	}
-	put_online_cpus();
 
 	/* Unconditionally decrement: no need to wake ourselves up. */
 	atomic_dec(&oom_callback_count);

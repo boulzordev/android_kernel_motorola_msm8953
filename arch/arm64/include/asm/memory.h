@@ -44,8 +44,10 @@
  * and PAGE_OFFSET - it must be within 128MB of the kernel text.
  */
 #define VA_BITS			(CONFIG_ARM64_VA_BITS)
-#define VA_START		(UL(0xffffffffffffffff) << VA_BITS)
-#define PAGE_OFFSET		(UL(0xffffffffffffffff) << (VA_BITS - 1))
+#define VA_START		(UL(0xffffffffffffffff) - \
+	(UL(1) << VA_BITS) + 1)
+#define PAGE_OFFSET		(UL(0xffffffffffffffff) - \
+	(UL(1) << (VA_BITS - 1)) + 1)
 #define MODULES_END		(PAGE_OFFSET)
 #define MODULES_VADDR		(MODULES_END - SZ_64M)
 #define EARLYCON_IOBASE		(MODULES_VADDR - SZ_4M)
@@ -63,10 +65,6 @@
 #endif /* CONFIG_COMPAT */
 
 #define TASK_UNMAPPED_BASE	(PAGE_ALIGN(TASK_SIZE / 4))
-
-#if TASK_SIZE_64 > MODULES_VADDR
-#error Top of 64-bit user space clashes with start of module space
-#endif
 
 /*
  * Physical vs virtual RAM address space conversion.  These are
