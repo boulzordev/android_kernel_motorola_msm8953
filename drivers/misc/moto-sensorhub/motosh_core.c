@@ -269,6 +269,7 @@ static ssize_t tabletop_mode_show(
 
 static struct device_attribute motosh_attributes[] = {
 	__ATTR_RO(timestamp_time_ns),
+	__ATTR_RO(tabletop_mode),
 	__ATTR(
 		rv_6axis_update_rate,
 		0664,
@@ -294,11 +295,6 @@ static struct device_attribute motosh_attributes[] = {
 		0664,
 		linear_accel_update_rate_show,
 		linear_accel_update_rate_store),
-	__ATTR(
-		tabletop_mode,
-		0664,
-		tabletop_mode_show,
-		NULL),
 	__ATTR_NULL
 };
 
